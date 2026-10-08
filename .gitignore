@@ -1,0 +1,113 @@
+# ================================
+# Python
+# ================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ================================
+# Environment / Secrets
+# ================================
+
+.env
+.env.*
+!.env.example
+
+# API keys / credentials
+*.pem
+*.key
+credentials.json
+token.json
+secrets.json
+
+# ================================
+# IDE / Editors
+# ================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ================================
+# OS files
+# ================================
+
+.DS_Store
+Thumbs.db
+
+# ================================
+# Logs
+# ================================
+
+*.log
+logs/
+
+# ================================
+# Testing / Coverage
+# ================================
+
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# ================================
+# Build / Packaging
+# ================================
+
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# ================================
+# Jupyter
+# ================================
+
+.ipynb_checkpoints/
+
+# ================================
+# Temporary files
+# ================================
+
+*.tmp
+*.temp
+tmp/
+temp/
+
+# ================================
+# Local data
+# ================================
+
+data/
+datasets/
+*.csv
+*.tsv
+*.jsonl
+
+# ================================
+# Generated outputs
+# ================================
+
+outputs/
+results/
+artifacts/
+
+# ================================
+# Local database files
+# ================================
+
+*.db
+*.sqlite
+*.sqlite3
