@@ -61,7 +61,7 @@ Do not invent highly specific facts about the startup.
 Base your recommendations on the provided description.
 """
 
-        response = await generate_with_fallback(
+        llm_result = await generate_with_fallback(
             client=self.client,
             contents=prompt,
             config={
@@ -69,7 +69,16 @@ Base your recommendations on the provided description.
                 "response_schema": ICP
             }
         )
-        icp = response.parsed
+
+        state.add_llm_call(self.name, llm_result)
+
+        icp = llm_result.response.parsed
+
+        if icp is None:
+            raise ValueError(
+                "ICP agent: Gemini returned output that "
+                "could not be parsed into an ICP."
+            )
 
         state.icp = icp
         state.add_history(

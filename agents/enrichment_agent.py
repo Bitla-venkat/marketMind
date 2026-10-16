@@ -70,7 +70,7 @@ class EnrichmentAgent(BaseAgent):
                 f"Searching: {query}"
             )
 
-            search_results = self.search_tool.search(
+            search_results = await self.search_tool.async_search(
                 query=query,
                 max_results=5
             )
@@ -154,7 +154,7 @@ buying_signals
 evidence
 """
 
-            response = await generate_with_fallback(
+            llm_result = await generate_with_fallback(
                 client=self.client,
                 contents=prompt,
                 config={
@@ -162,18 +162,9 @@ evidence
                 }
             )
 
-            if response is None:
+            state.add_llm_call(self.name, llm_result)
 
-                print(
-                    f"Enrichment failed for "
-                    f"{lead.company_name}"
-                )
-
-                enriched_leads.append(
-                    lead.model_dump()
-                )
-
-                continue
+            response = llm_result.response
 
             try:
 

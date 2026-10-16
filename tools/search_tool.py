@@ -1,5 +1,5 @@
 import os
-
+import asyncio
 from tavily import TavilyClient
 
 
@@ -38,3 +38,20 @@ class SearchTool:
         )
 
         return response.get("results", [])
+    async def async_search(
+        self,
+        query: str,
+        max_results: int = 5
+    ):
+        """
+        Non-blocking version of search().
+
+        Runs the blocking Tavily call in a worker thread so
+        the asyncio event loop stays free for other tasks.
+        """
+
+        return await asyncio.to_thread(
+            self.search,
+            query=query,
+            max_results=max_results
+        )
