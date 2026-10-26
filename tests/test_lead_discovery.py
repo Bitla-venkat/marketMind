@@ -45,6 +45,7 @@ class FakeGemini:
     def __init__(self, outcome):
         self.outcome = outcome
         self.calls = 0
+        self.prompts = []
 
         self.aio = SimpleNamespace(
             models=SimpleNamespace(
@@ -55,6 +56,8 @@ class FakeGemini:
     async def _generate(self, model, contents, config):
 
         self.calls += 1
+
+        self.prompts.append(contents)
 
         if isinstance(self.outcome, Exception):
             raise self.outcome
@@ -305,6 +308,28 @@ class DiscoveryConfigTests(unittest.IsolatedAsyncioTestCase):
             state.diagnostics["lead_discovery_agent"]["industries"],
             ["Retail", "E-commerce"]
         )
+
+    async def test_prompt_uses_the_startups_own_description(self):
+
+        # Regression: the prompt used to hard-code "MarketMind"
+        # whatever startup was being tested.
+        gemini = FakeGemini(LeadList(leads=[]))
+
+        state = make_state()
+        state.startup_description = (
+            "A cloud billing tool for small retailers."
+        )
+
+        agent = make_agent(FakeSearch(RESULTS), gemini)
+
+        await agent.run({}, state)
+
+        self.assertEqual(len(gemini.prompts), 1)
+        self.assertIn(
+            "A cloud billing tool for small retailers.",
+            gemini.prompts[0]
+        )
+        self.assertNotIn("MarketMind", gemini.prompts[0])
 
     async def test_requires_icp(self):
 

@@ -259,9 +259,10 @@ class LeadDiscoveryAgent(BaseAgent):
         prompt = f"""
 You are a B2B lead qualification agent.
 
-We are looking for potential customers for
-MarketMind, an AI marketing platform for Indian
-small and medium-sized businesses.
+We are looking for potential customers for the
+following startup:
+
+{state.startup_description}
 
 Ideal Customer Profile:
 

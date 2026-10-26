@@ -73,10 +73,9 @@ async def main():
     print("\n===== ENRICHED LEADS =====")
 
     for lead in enriched:
-        print(json.dumps(
-            lead,
-            indent=2
-        ))
+        print(
+            lead.model_dump_json(indent=2)
+        )
 
 
 if __name__ == "__main__":

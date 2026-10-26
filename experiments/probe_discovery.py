@@ -7,6 +7,7 @@ against the SAME ICP (so repeats show run-to-run randomness):
 
   baseline : 1 industry, 3 Tavily results per query  (current behaviour)
   wide     : 3 industries, 5 Tavily results per query
+  diverse  : 3 industries, 2 Tavily results per query
 
 It prints a table and a summary, and writes the full rows plus the
 ICPs used to a NEW timestamped file in experiments/, so earlier
@@ -92,6 +93,13 @@ CONFIGS = {
     "wide": {
         "max_industries": 3,
         "results_per_query": 5
+    },
+    # Same industries as "wide" but fewer results per query. Comparing
+    # baseline / diverse / wide shows whether more industries or more
+    # results per query is what helps.
+    "diverse": {
+        "max_industries": 3,
+        "results_per_query": 2
     }
 }
 
@@ -475,7 +483,7 @@ if __name__ == "__main__":
         "--configs",
         type=str,
         default=None,
-        help="Comma-separated: baseline, wide (default both)."
+        help="Comma-separated: baseline, wide, diverse (default all)."
     )
 
     args = parser.parse_args()

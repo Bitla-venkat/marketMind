@@ -1,5 +1,7 @@
-import os
 import asyncio
+import os
+import threading
+
 from tavily import TavilyClient
 
 
@@ -25,11 +27,20 @@ class SearchTool:
             api_key=api_key
         )
 
+        # Number of searches attempted. Read by the pipeline
+        # runner to report search cost. Searches may run in
+        # worker threads, so updates are guarded by a lock.
+        self.search_count = 0
+        self._count_lock = threading.Lock()
+
     def search(
         self,
         query: str,
         max_results: int = 5
     ):
+
+        with self._count_lock:
+            self.search_count += 1
 
         response = self.client.search(
             query=query,
@@ -38,6 +49,7 @@ class SearchTool:
         )
 
         return response.get("results", [])
+
     async def async_search(
         self,
         query: str,

@@ -4,6 +4,7 @@ import json
 from google import genai
 
 from agents.base import BaseAgent
+from core.models import EnrichedLead, EnrichmentExtract
 from utils.llm_retry import generate_with_fallback
 from tools.search_tool import SearchTool
 
@@ -23,7 +24,12 @@ class EnrichmentAgent(BaseAgent):
         "find_company_information"
     ]
 
-    def __init__(self):
+    def __init__(self, results_per_lead: int = 5):
+        """
+        results_per_lead:
+            Tavily results requested per company. The default (5)
+            matches the original behaviour.
+        """
 
         api_key = os.getenv("GEMINI_API_KEY")
 
@@ -38,6 +44,8 @@ class EnrichmentAgent(BaseAgent):
 
         self.search_tool = SearchTool()
 
+        self.results_per_lead = results_per_lead
+
     async def run(self, task, state):
 
         if not state.leads:
@@ -46,10 +54,26 @@ class EnrichmentAgent(BaseAgent):
                 "enrichment."
             )
 
+        # -----------------------------------------
+        # Diagnostics, stored in state.diagnostics.
+        # -----------------------------------------
+
+        diagnostics = {
+            "leads_in": len(state.leads),
+            "status_counts": {},
+            "evidence_total": 0,
+            "evidence_grounded": 0,
+            "per_lead": []
+        }
+
+        state.diagnostics[self.name] = diagnostics
+
         enriched_leads = []
 
         # -----------------------------------------
-        # Enrich every discovered lead
+        # Enrich every discovered lead. A failure on
+        # one lead is recorded and never stops the
+        # others.
         # -----------------------------------------
 
         for lead in state.leads:
@@ -59,44 +83,138 @@ class EnrichmentAgent(BaseAgent):
                 f"{lead.company_name}"
             )
 
-            query = (
-                f'"{lead.company_name}" '
-                f'India company website '
-                f'founder employees LinkedIn '
-                f'marketing'
-            )
+            record = {
+                "company": lead.company_name,
+                "status": None,
+                "search_results": 0,
+                "evidence": 0,
+                "evidence_grounded": 0,
+                "error": None
+            }
 
-            print(
-                f"Searching: {query}"
-            )
+            # Updated by _enrich_one() so a failure can be
+            # labelled search_error or llm_error.
+            stage_holder = {"stage": "search"}
 
-            search_results = await self.search_tool.async_search(
-                query=query,
-                max_results=5
-            )
+            try:
 
-            if not search_results:
+                enriched = await self._enrich_one(
+                    lead,
+                    state,
+                    record,
+                    stage_holder
+                )
+
+            except Exception as e:
+
+                enriched = EnrichedLead(
+                    lead=lead,
+                    status=f"{stage_holder['stage']}_error",
+                    error=(
+                        f"{type(e).__name__}: "
+                        f"{str(e)[:300]}"
+                    )
+                )
 
                 print(
-                    "No enrichment results found."
+                    f"Enrichment failed for "
+                    f"{lead.company_name}: {enriched.error}"
                 )
 
-                enriched_leads.append(
-                    lead.model_dump()
-                )
+            record["status"] = enriched.status
+            record["error"] = enriched.error
 
-                continue
+            counts = diagnostics["status_counts"]
 
-            results_text = json.dumps(
-                search_results,
-                indent=2
+            counts[enriched.status] = (
+                counts.get(enriched.status, 0) + 1
             )
 
-            # -------------------------------------
-            # Ask Gemini to extract evidence
-            # -------------------------------------
+            diagnostics["evidence_total"] += record["evidence"]
 
-            prompt = f"""
+            diagnostics["evidence_grounded"] += record[
+                "evidence_grounded"
+            ]
+
+            diagnostics["per_lead"].append(record)
+
+            enriched_leads.append(enriched)
+
+        # -----------------------------------------
+        # Save enriched data
+        # -----------------------------------------
+
+        state.enriched_leads = enriched_leads
+
+        state.add_history(
+            self.name,
+            [
+                enriched.model_dump()
+                for enriched in enriched_leads
+            ]
+        )
+
+        print(
+            f"\nTotal enriched leads: "
+            f"{len(enriched_leads)} "
+            f"(status: {diagnostics['status_counts']})"
+        )
+
+        return enriched_leads
+
+    async def _enrich_one(
+        self,
+        lead,
+        state,
+        record,
+        stage_holder
+    ):
+        """
+        Enrich a single lead and return an EnrichedLead.
+
+        Raises on search/Gemini errors; run() catches them and
+        uses stage_holder["stage"] to say which stage failed.
+        """
+
+        query = (
+            f'"{lead.company_name}" '
+            f'India company website '
+            f'founder employees LinkedIn '
+            f'marketing'
+        )
+
+        print(
+            f"Searching: {query}"
+        )
+
+        search_results = await self.search_tool.async_search(
+            query=query,
+            max_results=self.results_per_lead
+        )
+
+        record["search_results"] = len(search_results)
+
+        if not search_results:
+
+            print(
+                "No enrichment results found."
+            )
+
+            return EnrichedLead(
+                lead=lead,
+                status="no_search_results"
+            )
+
+        results_text = json.dumps(
+            search_results,
+            indent=2
+        )
+
+        # -------------------------------------
+        # Ask Gemini to extract evidence
+        # -------------------------------------
+
+        prompt = f"""
 You are a company research and enrichment agent.
 
 We discovered this potential lead:
@@ -135,77 +253,69 @@ IMPORTANT:
 3. Prefer information from official company
    websites or reliable company profiles.
 
-4. Include evidence URLs for important claims.
+4. For important claims, add an evidence item
+   with the claim and the URL that supports it.
+   The URL MUST be one of the URLs in the search
+   results above.
 
-5. Keep the original company identity intact.
-
-Return a JSON object with:
-
-company_name
-website
-linkedin
-company_size
-location
-industry
-founders
-buyer_roles
-products_services
-buying_signals
-evidence
+5. The company identity is fixed. Do not
+   rename it or switch to a different company
+   with a similar name.
 """
 
-            llm_result = await generate_with_fallback(
-                client=self.client,
-                contents=prompt,
-                config={
-                    "response_mime_type": "application/json"
-                }
+        stage_holder["stage"] = "llm"
+
+        llm_result = await generate_with_fallback(
+            client=self.client,
+            contents=prompt,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": EnrichmentExtract
+            }
+        )
+
+        state.add_llm_call(self.name, llm_result)
+
+        extract = llm_result.response.parsed
+
+        if extract is None:
+
+            print(
+                f"Gemini output could not be parsed for "
+                f"{lead.company_name}"
             )
 
-            state.add_llm_call(self.name, llm_result)
+            return EnrichedLead(
+                lead=lead,
+                status="llm_parse_failed"
+            )
 
-            response = llm_result.response
+        # -------------------------------------
+        # Grounding check: does each evidence URL
+        # appear in the search results we supplied?
+        # -------------------------------------
 
-            try:
+        known_urls = {
+            result["url"].rstrip("/")
+            for result in search_results
+            if result.get("url")
+        }
 
-                enriched_data = json.loads(
-                    response.text
-                )
+        record["evidence"] = len(extract.evidence)
 
-                enriched_leads.append(
-                    enriched_data
-                )
-
-                print(
-                    f"Enriched: "
-                    f"{lead.company_name}"
-                )
-
-            except Exception as e:
-
-                print(
-                    f"Could not parse enrichment "
-                    f"for {lead.company_name}: {e}"
-                )
-
-                enriched_leads.append(
-                    lead.model_dump()
-                )
-
-        # -----------------------------------------
-        # Save enriched data
-        # -----------------------------------------
-
-        state.enriched_leads = enriched_leads
-
-        state.add_history(
-            self.name,
-            enriched_leads
+        record["evidence_grounded"] = sum(
+            1
+            for item in extract.evidence
+            if item.url.rstrip("/") in known_urls
         )
 
         print(
-            f"\nTotal enriched leads: "
-            f"{len(enriched_leads)}"
+            f"Enriched: "
+            f"{lead.company_name}"
         )
 
-        return enriched_leads
+        return EnrichedLead(
+            lead=lead,
+            status="ok",
+            details=extract
+        )
