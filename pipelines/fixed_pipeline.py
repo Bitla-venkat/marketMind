@@ -55,6 +55,17 @@ def is_success(record: dict) -> bool:
     )
 
 
+def models_used(calls: list[dict]) -> dict:
+    """{model name: number of successful calls it served}."""
+
+    counts = {}
+
+    for call in calls:
+        counts[call["model"]] = counts.get(call["model"], 0) + 1
+
+    return counts
+
+
 def _search_count(agent) -> int:
     """Searches attempted so far by an agent's search tool."""
 
@@ -113,6 +124,7 @@ class FixedPipeline:
             "input_tokens": 0,
             "output_tokens": 0,
             "search_calls": 0,
+            "models_used": {},
             "leads_found": 0,
             "leads_enriched_ok": 0,
             "leads_scored": 0,
@@ -150,6 +162,8 @@ class FixedPipeline:
             record["input_tokens"] += step["input_tokens"]
             record["output_tokens"] += step["output_tokens"]
             record["search_calls"] += step["search_calls"]
+
+        record["models_used"] = models_used(state.llm_calls)
 
         record["leads_found"] = len(state.leads)
 

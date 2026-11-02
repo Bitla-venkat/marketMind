@@ -20,7 +20,7 @@ Gemini calls (ICP, discovery, one per lead for enrichment, scoring) and
 Run from the project root:
 
     python -m experiments.run_baseline --n 2
-    python -m experiments.run_baseline --n 2 --variants narrow --repeat 3
+    python -m experiments.run_baseline --n 2 --variants narrow,dynamic --repeat 3
 """
 
 import argparse
@@ -32,7 +32,30 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from experiments.probe_discovery import STARTUPS
+from pipelines.dynamic_pipeline import (
+    DYNAMIC_VARIANTS,
+    build_dynamic_pipeline
+)
 from pipelines.fixed_pipeline import VARIANTS, build_fixed_pipeline
+
+# Every name --variants accepts. Fixed ones first.
+ALL_VARIANTS = [*VARIANTS, *DYNAMIC_VARIANTS]
+
+# Variants run when --variants is not given.
+DEFAULT_VARIANTS = ["narrow", "wide", "dynamic"]
+
+# A "good" run for the stricter success rate: it also scored at
+# least this many leads.
+MIN_GOOD_LEADS = 3
+
+
+def build_pipeline(variant: str):
+    """The pipeline object for a variant name."""
+
+    if variant in VARIANTS:
+        return build_fixed_pipeline(variant)
+
+    return build_dynamic_pipeline(variant)
 
 
 EXPERIMENTS_DIR = Path(__file__).parent
@@ -41,6 +64,18 @@ EXPERIMENTS_DIR = Path(__file__).parent
 def _mean(values: list) -> float | None:
 
     return round(sum(values) / len(values), 2) if values else None
+
+
+def _sum_models(runs: list[dict]) -> dict:
+    """Total calls served by each model across the runs."""
+
+    totals = {}
+
+    for run in runs:
+        for model, count in run.get("models_used", {}).items():
+            totals[model] = totals.get(model, 0) + count
+
+    return totals
 
 
 def summarise_runs(records: list[dict]) -> dict:
@@ -71,9 +106,21 @@ def summarise_runs(records: list[dict]) -> dict:
             and run["leads_scored"] == 0
         )
 
+        good = [
+            r for r in successes
+            if r["leads_scored"] >= MIN_GOOD_LEADS
+        ]
+
         summary[name] = {
             "runs": len(runs),
             "success_rate": round(len(successes) / len(runs), 3),
+            f"success_rate_min{MIN_GOOD_LEADS}_leads": round(
+                len(good) / len(runs), 3
+            ),
+            "mean_recoveries": _mean(
+                [len(r.get("recoveries", [])) for r in runs]
+            ),
+            "models_used": _sum_models(runs),
             "failed_steps": failed_steps,
             "finished_with_no_scored_leads": empty_runs,
             "mean_latency_s": _mean([r["latency_s"] for r in runs]),
@@ -115,7 +162,7 @@ async def main(n: int, variants: list[str], repeat: int):
                     f"/ run {run_number}/{repeat} ########"
                 )
 
-                pipeline = build_fixed_pipeline(variant)
+                pipeline = build_pipeline(variant)
 
                 _, record = await pipeline.run(
                     startup["description"],
@@ -131,21 +178,22 @@ async def main(n: int, variants: list[str], repeat: int):
     print("\n\n==================== RESULTS ====================\n")
 
     print(
-        f"{'startup':<19}{'pipeline':<14}{'run':>4}  {'ok':<6}"
-        f"{'failed step':<24}{'sec':>7}{'llm':>5}{'search':>7}"
-        f"{'found':>6}{'enr':>5}{'scored':>7}"
+        f"{'startup':<19}{'pipeline':<22}{'run':>4}  {'ok':<6}"
+        f"{'failed step':<22}{'sec':>7}{'llm':>5}{'search':>7}"
+        f"{'rec':>4}{'found':>6}{'enr':>5}{'scored':>7}"
     )
 
     for record in records:
 
         print(
-            f"{record['label']:<19}{record['pipeline']:<14}"
+            f"{record['label']:<19}{record['pipeline']:<22}"
             f"{record['repeat']:>4}  "
             f"{str(record['success']):<6}"
-            f"{str(record['failed_step'] or '-'):<24}"
+            f"{str(record['failed_step'] or '-'):<22}"
             f"{record['latency_s']:>7.1f}"
             f"{record['llm_calls']:>5}"
             f"{record['search_calls']:>7}"
+            f"{len(record.get('recoveries', [])):>4}"
             f"{record['leads_found']:>6}"
             f"{record['leads_enriched_ok']:>5}"
             f"{record['leads_scored']:>7}"
@@ -191,8 +239,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--variants",
         type=str,
-        default=",".join(VARIANTS),
-        help="Comma-separated: narrow, wide (default both)."
+        default=",".join(DEFAULT_VARIANTS),
+        help=(
+            "Comma-separated, from: "
+            + ", ".join(ALL_VARIANTS)
+            + f" (default {','.join(DEFAULT_VARIANTS)})."
+        )
     )
 
     parser.add_argument(
@@ -210,12 +262,12 @@ if __name__ == "__main__":
         if item.strip()
     ]
 
-    unknown = [item for item in chosen if item not in VARIANTS]
+    unknown = [item for item in chosen if item not in ALL_VARIANTS]
 
     if unknown:
         parser.error(
             f"Unknown variant(s): {', '.join(unknown)}. "
-            f"Choose from: {', '.join(VARIANTS)}."
+            f"Choose from: {', '.join(ALL_VARIANTS)}."
         )
 
     if args.repeat < 1:
