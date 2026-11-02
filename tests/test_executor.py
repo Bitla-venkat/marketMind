@@ -309,7 +309,10 @@ class AccountingTests(unittest.TestCase):
         )
         self.assertEqual(
             set(dynamic) - set(fixed),
-            {"skipped", "recoveries", "plan", "max_concurrency"}
+            {
+                "skipped", "recoveries", "degraded", "plan",
+                "max_concurrency"
+            }
         )
 
 

@@ -393,9 +393,12 @@ class FlakyLeadsGemini(RoutingGemini):
 
 class RealAgentsRecoveryTests(unittest.TestCase):
 
-    def wired(self, gemini):
+    def wired(self, gemini, floor=1):
 
-        original = build_default_registry(min_leads=3)
+        original = build_default_registry(
+            min_leads=3,
+            min_leads_floor=floor
+        )
 
         registry = AgentRegistry()
 
@@ -425,9 +428,9 @@ class RealAgentsRecoveryTests(unittest.TestCase):
 
         return registry
 
-    def run_default(self, gemini):
+    def run_default(self, gemini, floor=1):
 
-        registry = self.wired(gemini)
+        registry = self.wired(gemini, floor)
 
         plan = Planner(registry).plan("scores")
 
@@ -465,7 +468,8 @@ class RealAgentsRecoveryTests(unittest.TestCase):
 
         gemini = FlakyLeadsGemini(first=1, later=1)
 
-        _, record = self.run_default(gemini)
+        # Floor 3 = no tolerance for a thin result.
+        _, record = self.run_default(gemini, floor=3)
 
         # 1 first run, a same-settings retry, then the wide retry.
         self.assertFalse(record["success"])
@@ -482,6 +486,30 @@ class RealAgentsRecoveryTests(unittest.TestCase):
             record["skipped"],
             ["enrichment_agent", "scoring_agent"]
         )
+
+    def test_thin_result_after_all_retries_is_kept_when_acceptable(self):
+
+        gemini = FlakyLeadsGemini(first=1, later=1)
+
+        # Floor 1: one lead is enough to carry on.
+        _, record = self.run_default(gemini, floor=1)
+
+        self.assertTrue(record["success"])
+        self.assertEqual(gemini.discovery_calls, 3)
+        self.assertEqual(record["degraded"], ["lead_discovery_agent"])
+        self.assertEqual(record["skipped"], [])
+        self.assertEqual(record["failed_step"], None)
+
+    def test_zero_leads_after_all_retries_still_fails(self):
+
+        _, record = self.run_default(
+            FlakyLeadsGemini(first=0, later=0),
+            floor=1
+        )
+
+        self.assertFalse(record["success"])
+        self.assertEqual(record["degraded"], [])
+        self.assertEqual(record["failed_step"], "lead_discovery_agent")
 
     def test_a_healthy_run_triggers_no_recovery(self):
 

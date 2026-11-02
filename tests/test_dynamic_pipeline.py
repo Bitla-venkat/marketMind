@@ -169,15 +169,28 @@ class EndToEndTests(unittest.TestCase):
         # The retry cost one more discovery call.
         self.assertEqual(record["agent_calls"], 5)
 
-    def test_without_recovery_a_thin_result_stops_the_run(self):
+    def test_without_recovery_a_thin_result_is_kept_as_degraded(self):
 
         _, record = run_dynamic(
             "dynamic-no-recovery",
             FlakyLeadsGemini(first=1, later=3)
         )
 
+        # One lead is below the target of 3 but above the minimum.
+        self.assertTrue(record["success"])
+        self.assertEqual(record["degraded"], ["lead_discovery_agent"])
+        self.assertEqual(record["recoveries"], [])
+
+    def test_without_recovery_zero_leads_stops_the_run(self):
+
+        _, record = run_dynamic(
+            "dynamic-no-recovery",
+            FlakyLeadsGemini(first=0, later=3)
+        )
+
         self.assertFalse(record["success"])
         self.assertEqual(record["failed_step"], "lead_discovery_agent")
+        self.assertEqual(record["degraded"], [])
 
     def test_plain_variant_accepts_the_thin_result(self):
 
@@ -203,7 +216,10 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(set(fixed) - set(dynamic), set())
         self.assertEqual(
             set(dynamic) - set(fixed),
-            {"skipped", "recoveries", "plan", "max_concurrency"}
+            {
+                "skipped", "recoveries", "degraded", "plan",
+                "max_concurrency"
+            }
         )
 
 

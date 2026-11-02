@@ -22,10 +22,25 @@ class ValidationResult:
     # Numbers behind the verdict, kept in the run record.
     metrics: dict = field(default_factory=dict)
 
+    # Below the TARGET but still above the MINIMUM needed to carry
+    # on. When a failed result is acceptable and recovery cannot
+    # improve it, the executor continues with it ("degraded") instead
+    # of failing the run. None means: acceptable only if passed.
+    acceptable: bool | None = None
+
+    @property
+    def can_continue(self) -> bool:
+
+        if self.acceptable is None:
+            return self.passed
+
+        return self.passed or self.acceptable
+
     def to_dict(self) -> dict:
 
         return {
             "passed": self.passed,
+            "acceptable": self.can_continue,
             "reason": self.reason,
             "metrics": dict(self.metrics)
         }
@@ -36,9 +51,13 @@ def _pass(**metrics) -> ValidationResult:
     return ValidationResult(True, "", metrics)
 
 
-def _fail(reason: str, **metrics) -> ValidationResult:
+def _fail(
+    reason: str,
+    acceptable: bool | None = None,
+    **metrics
+) -> ValidationResult:
 
-    return ValidationResult(False, reason, metrics)
+    return ValidationResult(False, reason, metrics, acceptable)
 
 
 def validate_icp(state) -> ValidationResult:
@@ -60,8 +79,17 @@ def validate_icp(state) -> ValidationResult:
     return _pass(industries=industries)
 
 
-def make_leads_validator(min_leads: int = 3):
-    """Discovery found at least `min_leads` leads."""
+def make_leads_validator(min_leads: int = 3, floor: int = 1):
+    """
+    Discovery found at least `min_leads` leads (the target).
+
+    Fewer than the target triggers recovery. If recovery cannot reach
+    the target, the run continues as long as at least `floor` leads
+    were found; below the floor it fails.
+    """
+
+    if floor > min_leads:
+        raise ValueError("floor cannot be above the target.")
 
     def validate_leads(state) -> ValidationResult:
 
@@ -70,11 +98,13 @@ def make_leads_validator(min_leads: int = 3):
         if found < min_leads:
             return _fail(
                 f"Found {found} lead(s); need at least {min_leads}.",
+                acceptable=found >= floor,
                 leads=found,
-                min_leads=min_leads
+                min_leads=min_leads,
+                floor=floor
             )
 
-        return _pass(leads=found, min_leads=min_leads)
+        return _pass(leads=found, min_leads=min_leads, floor=floor)
 
     return validate_leads
 

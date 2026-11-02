@@ -14,6 +14,10 @@ Failure handling:
     an action: retry (possibly with changed params), swap in another
     agent, or give up. Every attempt is a step in the run record and
     costs what it costs; each action is logged under "recoveries".
+  * When a node ends rejected (recovery gave up, or there is none) but
+    its validator says the result is still ACCEPTABLE (above the
+    minimum, below the target), the node is kept as "degraded" and the
+    run continues with it. Degraded nodes are listed in the record.
 
 The run record has the same fields as FixedPipeline's, plus the plan,
 so the two can be compared directly.
@@ -27,7 +31,12 @@ from datetime import datetime, timezone
 from core.planner import Plan
 from core.registry import AgentRegistry
 from core.state import AgentState
-from pipelines.fixed_pipeline import is_success, models_used
+from pipelines.fixed_pipeline import (
+    count_failure_kinds,
+    is_success,
+    merge_counts,
+    models_used
+)
 
 
 def _search_count(agent) -> int:
@@ -70,13 +79,21 @@ class Executor:
         self,
         plan: Plan,
         startup_description: str,
-        label: str | None = None
+        label: str | None = None,
+        initial: dict | None = None
     ):
         """
         Execute the plan from scratch. Returns (state, record).
+
+        initial: artifacts that already exist, such as a ready-made
+        ICP. They are placed in the state first. The plan should not
+        contain agents for them (see Planner.plan(available=...)).
         """
 
         state = AgentState(startup_description)
+
+        for name, value in (initial or {}).items():
+            state.set_artifact(name, value)
 
         record = {
             "pipeline": self.name,
@@ -93,6 +110,9 @@ class Executor:
             "output_tokens": 0,
             "search_calls": 0,
             "models_used": {},
+            "failure_kinds": {},
+            "frozen_icp": "icp" in (initial or {}),
+            "degraded": [],
             "leads_found": 0,
             "leads_enriched_ok": 0,
             "leads_scored": 0,
@@ -170,14 +190,27 @@ class Executor:
 
                 if action is None or action.kind == "give_up":
 
-                    failed.add(node.id)
-                    final_failures[node.id] = step
-
                     if action is not None:
                         record["recoveries"].append({
                             "node": node.id,
                             **action.to_dict()
                         })
+
+                    validation = step["validation"]
+
+                    if (
+                        step["status"] == "invalid"
+                        and validation is not None
+                        and validation["acceptable"]
+                    ):
+                        # Below target, above minimum: carry on.
+                        step["status"] = "degraded"
+                        done.add(node.id)
+                        record["degraded"].append(node.id)
+
+                    else:
+                        failed.add(node.id)
+                        final_failures[node.id] = step
 
                     continue
 
@@ -227,6 +260,10 @@ class Executor:
             record["search_calls"] += step["search_calls"]
 
         record["models_used"] = models_used(state.llm_calls)
+
+        record["failure_kinds"] = merge_counts(
+            [step["failure_kinds"] for step in record["steps"]]
+        )
 
         record["leads_found"] = len(state.leads)
 
@@ -283,7 +320,7 @@ class Executor:
             status = "ok"
             error = None
             validation = None
-            extra_failed_attempts = 0
+            extra_failures = []
 
             # LLM calls are matched to a node by agent name, because
             # several nodes may run at once and share state.llm_calls.
@@ -330,7 +367,7 @@ class Executor:
 
                 error = f"{type(e).__name__}: {str(e)[:300]}"
 
-                extra_failed_attempts = len(
+                extra_failures = list(
                     getattr(e, "llm_failures", [])
                 )
 
@@ -342,6 +379,12 @@ class Executor:
                 len(calls_before):
             ]
 
+            failures = [
+                failure
+                for call in calls
+                for failure in call["failures"]
+            ] + extra_failures
+
             return {
                 "node": node.id,
                 "agent": node.agent,
@@ -352,10 +395,8 @@ class Executor:
                 "validation": validation,
                 "latency_s": round(latency, 3),
                 "llm_calls": len(calls),
-                "llm_failed_attempts": (
-                    sum(len(call["failures"]) for call in calls)
-                    + extra_failed_attempts
-                ),
+                "llm_failed_attempts": len(failures),
+                "failure_kinds": count_failure_kinds(failures),
                 "input_tokens": sum(
                     call["input_tokens"] or 0 for call in calls
                 ),
@@ -385,6 +426,7 @@ class Executor:
 
             return {
                 "passed": False,
+                "acceptable": False,
                 "reason": (
                     f"Validator error: {type(e).__name__}: "
                     f"{str(e)[:200]}"

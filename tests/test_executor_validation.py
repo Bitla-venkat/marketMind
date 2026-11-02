@@ -73,7 +73,12 @@ class ExecutorValidationTests(unittest.TestCase):
         self.assertEqual(step["status"], "ok")
         self.assertEqual(
             step["validation"],
-            {"passed": True, "reason": "", "metrics": {"n": 1}}
+            {
+                "passed": True,
+                "acceptable": True,
+                "reason": "",
+                "metrics": {"n": 1}
+            }
         )
 
     def test_agent_without_validator_has_none(self):
@@ -150,9 +155,12 @@ class ExecutorValidationTests(unittest.TestCase):
 class RealAgentsValidationTests(unittest.TestCase):
     """Real agents with fake clients: the fake gives only 2 leads."""
 
-    def wired(self, min_leads):
+    def wired(self, min_leads, floor=None):
 
-        original = build_default_registry(min_leads=min_leads)
+        original = build_default_registry(
+            min_leads=min_leads,
+            min_leads_floor=min_leads if floor is None else floor
+        )
 
         registry = AgentRegistry()
 
@@ -183,9 +191,9 @@ class RealAgentsValidationTests(unittest.TestCase):
 
         return registry
 
-    def run_scores(self, min_leads):
+    def run_scores(self, min_leads, floor=None):
 
-        registry = self.wired(min_leads)
+        registry = self.wired(min_leads, floor)
 
         plan = Planner(registry).plan("scores")
 
@@ -212,6 +220,17 @@ class RealAgentsValidationTests(unittest.TestCase):
         self.assertEqual(record["agent_calls"], 2)
         self.assertEqual(record["llm_calls"], 2)
         self.assertEqual(record["search_calls"], 3)
+
+    def test_below_target_but_above_floor_continues_as_degraded(self):
+
+        # Fake Gemini gives 2 leads: target 3, floor 1.
+        _, record = self.run_scores(min_leads=3, floor=1)
+
+        self.assertTrue(record["success"])
+        self.assertEqual(record["degraded"], ["lead_discovery_agent"])
+        self.assertEqual(record["skipped"], [])
+        self.assertEqual(record["agent_calls"], 4)
+        self.assertEqual(record["steps"][1]["status"], "degraded")
 
     def test_enough_leads_lets_everything_run(self):
 

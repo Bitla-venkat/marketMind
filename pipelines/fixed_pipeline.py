@@ -66,6 +66,36 @@ def models_used(calls: list[dict]) -> dict:
     return counts
 
 
+def count_failure_kinds(failures: list[dict]) -> dict:
+    """
+    {kind: count} of failed Gemini attempts. The kind is the HTTP code
+    when there is one (a 429 returns at once), otherwise the error
+    type (a TimeoutError has cost the full timeout, a minute or so).
+    """
+
+    kinds = {}
+
+    for failure in failures:
+
+        kind = str(failure.get("code") or failure.get("type") or "unknown")
+
+        kinds[kind] = kinds.get(kind, 0) + 1
+
+    return kinds
+
+
+def merge_counts(counts: list[dict]) -> dict:
+    """Add up several {key: count} dicts."""
+
+    total = {}
+
+    for item in counts:
+        for key, value in item.items():
+            total[key] = total.get(key, 0) + value
+
+    return total
+
+
 def _search_count(agent) -> int:
     """Searches attempted so far by an agent's search tool."""
 
@@ -76,10 +106,12 @@ def _search_count(agent) -> int:
     )
 
 
-def _failed_attempts(calls: list[dict]) -> int:
+def _failures_in(calls: list[dict]) -> list[dict]:
     """Gemini attempts that failed inside calls that recovered."""
 
-    return sum(len(call["failures"]) for call in calls)
+    return [
+        failure for call in calls for failure in call["failures"]
+    ]
 
 
 class FixedPipeline:
@@ -99,16 +131,33 @@ class FixedPipeline:
     async def run(
         self,
         startup_description: str,
-        label: str | None = None
+        label: str | None = None,
+        icp=None
     ):
         """
         Run every step in order.
 
         Returns (state, record). `label` identifies the input
         (for example a startup id) in the record.
+
+        icp: a ready-made ICP. When given, it is placed in the state
+        and the ICP step is skipped, so several pipelines can be
+        compared on exactly the same ICP.
         """
 
         state = AgentState(startup_description)
+
+        steps = self.steps
+
+        if icp is not None:
+
+            state.icp = icp
+
+            steps = [
+                (agent, task)
+                for agent, task in self.steps
+                if agent.name != "icp_agent"
+            ]
 
         record = {
             "pipeline": self.name,
@@ -125,6 +174,8 @@ class FixedPipeline:
             "output_tokens": 0,
             "search_calls": 0,
             "models_used": {},
+            "failure_kinds": {},
+            "frozen_icp": False,
             "leads_found": 0,
             "leads_enriched_ok": 0,
             "leads_scored": 0,
@@ -133,7 +184,7 @@ class FixedPipeline:
 
         started = time.perf_counter()
 
-        for agent, task in self.steps:
+        for agent, task in steps:
 
             step = await self._run_step(agent, task, state)
 
@@ -165,6 +216,10 @@ class FixedPipeline:
 
         record["models_used"] = models_used(state.llm_calls)
 
+        record["failure_kinds"] = merge_counts(
+            [step["failure_kinds"] for step in record["steps"]]
+        )
+
         record["leads_found"] = len(state.leads)
 
         record["leads_enriched_ok"] = sum(
@@ -174,6 +229,8 @@ class FixedPipeline:
         )
 
         record["leads_scored"] = len(state.scores)
+
+        record["frozen_icp"] = icp is not None
 
         record["success"] = is_success(record)
 
@@ -187,7 +244,7 @@ class FixedPipeline:
 
         status = "ok"
         error = None
-        extra_failed_attempts = 0
+        extra_failures = []
 
         started = time.perf_counter()
 
@@ -202,9 +259,7 @@ class FixedPipeline:
             error = f"{type(e).__name__}: {str(e)[:300]}"
 
             # Gemini attempts made before a call failed outright.
-            extra_failed_attempts = len(
-                getattr(e, "llm_failures", [])
-            )
+            extra_failures = list(getattr(e, "llm_failures", []))
 
             print(f"\nStep {agent.name} failed: {error}")
 
@@ -212,15 +267,16 @@ class FixedPipeline:
 
         calls = state.llm_calls[llm_before:]
 
+        failures = _failures_in(calls) + extra_failures
+
         return {
             "agent": agent.name,
             "status": status,
             "error": error,
             "latency_s": round(latency, 3),
             "llm_calls": len(calls),
-            "llm_failed_attempts": (
-                _failed_attempts(calls) + extra_failed_attempts
-            ),
+            "llm_failed_attempts": len(failures),
+            "failure_kinds": count_failure_kinds(failures),
             "input_tokens": sum(
                 call["input_tokens"] or 0 for call in calls
             ),

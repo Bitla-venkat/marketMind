@@ -14,7 +14,9 @@ Flow of one run:
   3. After each node its validator checks the output.
   4. If a node fails or its output is rejected, the recovery policy
      picks one action: retry (maybe with wider settings), swap in an
-     alternative agent, or give up.
+     alternative agent, or give up. A rejected result that is still
+     above the validator's minimum is kept as "degraded" and the run
+     carries on with it.
   5. The run record lists every attempt, its cost, and every recovery.
 
 Variants, for ablation studies:
@@ -44,6 +46,7 @@ class DynamicPipeline:
         name: str = "dynamic",
         goal: str = "scores",
         min_leads: int = 3,
+        min_leads_floor: int = 1,
         validate: bool = True,
         recovery: bool = True,
         max_recoveries_per_run: int = 3,
@@ -53,9 +56,15 @@ class DynamicPipeline:
         self.name = name
         self.goal = goal
 
-        self.registry = build_default_registry(min_leads=min_leads)
+        self.registry = build_default_registry(
+            min_leads=min_leads,
+            min_leads_floor=min_leads_floor
+        )
 
-        self.plan = Planner(self.registry).plan(goal)
+        self._planner = Planner(self.registry)
+
+        # The plan used when no ICP is supplied.
+        self.plan = self._planner.plan(goal)
 
         policy = (
             RecoveryPolicy(
@@ -77,14 +86,32 @@ class DynamicPipeline:
     async def run(
         self,
         startup_description: str,
-        label: str | None = None
+        label: str | None = None,
+        icp=None
     ):
-        """Plan was built once; every run executes it afresh."""
+        """
+        Execute the plan afresh.
+
+        icp: a ready-made ICP. The planner then leaves the ICP agent
+        out of the plan, so every pipeline can start from the same
+        ICP.
+        """
+
+        if icp is None:
+
+            return await self.executor.run(
+                self.plan,
+                startup_description,
+                label=label
+            )
+
+        plan = self._planner.plan(self.goal, available={"icp"})
 
         return await self.executor.run(
-            self.plan,
+            plan,
             startup_description,
-            label=label
+            label=label,
+            initial={"icp": icp}
         )
 
 

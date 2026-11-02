@@ -44,10 +44,14 @@ def _scoring_agent(**params):
 
 def build_default_registry(
     min_leads: int = 3,
-    min_enriched_ok: int = 1
+    min_enriched_ok: int = 1,
+    min_leads_floor: int = 1
 ) -> AgentRegistry:
     """
-    min_leads: discovery must return at least this many leads.
+    min_leads: target. Fewer leads than this triggers recovery.
+    min_leads_floor: fewer than this fails the run; between the floor
+        and the target the run continues as "degraded" once recovery
+        has run out.
     min_enriched_ok: enrichment must succeed for at least this many.
     """
 
@@ -70,7 +74,10 @@ def build_default_registry(
         requires=("startup_description", "icp"),
         produces=("leads",),
         factory=_lead_discovery_agent,
-        validator=make_leads_validator(min_leads),
+        validator=make_leads_validator(
+            min_leads,
+            min_leads_floor
+        ),
         # Same settings once (results vary run to run), then the
         # wide variant used by the fixed "wide" baseline.
         escalations=(
